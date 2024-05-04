@@ -6,3 +6,8 @@
     - handle bad data
 2. Write testing code that tests the sorting functions.
 3. 
+
+
+HTTP Request from Client to know what sorting mechanism to use;
+
+Query Data from Table; 
