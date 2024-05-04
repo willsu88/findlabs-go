@@ -1,6 +1,6 @@
 {
-  "sortBy": "transaction",
-  "order": "descend",
+  "sortBy": "name",
+  "descending": "true",
   "contracts": [
     {
       "name": "kduffield0",
