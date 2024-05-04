@@ -8,6 +8,7 @@ import (
 	_ "github.com/lib/pq"
 	"log"
 	"net/http"
+	"sort"
 )
 
 type ContractType string
@@ -16,6 +17,9 @@ type Order string
 type SortBy string
 
 const portNum string = ":8080"
+const userName string = "postgres"
+const password string = "password123"
+
 const (
 	Ok    Status = "ok"
 	Error Status = "error"
@@ -38,12 +42,12 @@ type JsonPayload struct {
 }
 
 type Contract struct {
-	Name         string
-	Address      string
-	Transaction  string
-	Block        int `json:",string"`
-	ContractType ContractType
-	Status       Status
+	Name         string       `db:"name"`
+	Address      string       `db:"address"`
+	Transaction  string       `db:"transaction_id"`
+	Block        int          `db:"block"`
+	ContractType ContractType `db:"contractType"`
+	Status       Status       `db:"status"`
 }
 
 var contracts []Contract
@@ -54,78 +58,29 @@ func Home(w http.ResponseWriter, r *http.Request) {
 }
 
 func getContracts(w http.ResponseWriter, r *http.Request) {
+	log.Println("Get Contracts function")
+
 	json.NewEncoder(w).Encode(contracts)
 }
 
-func main() {
-	initTestLocalData()
+func getContractsSort(w http.ResponseWriter, r *http.Request) {
+	log.Println("Into Sorting function")
+	vars := mux.Vars(r)
 
-	db, err := initDB()
-	if err != nil {
-		fmt.Printf("failed to init db")
-		return
+	sortType := vars["sort_type"]
+	isDescending := false
+	if vars["sort"] == "asc" {
+		isDescending = true
 	}
-
-	fmt.Println(db)
-	// names, err := queryContracts(db)
-	// if err != nil {
-	// 	fmt.Printf("failed to query DB")
-	//     return
-	// }
-
-	// fmt.Println("The iterated elements are:")
-	// for i, item := range names {
-	//    fmt.Println(i, "--", item)
-	// }
-
-	startHttpServer()
-}
-
-func initTestLocalData() {
-	c1 := Contract{"abc", "addres", "0x111", 123, "deployed", "ok"}
-	c2 := Contract{"abc", "addres", "0x111", 123, "deployed", "ok"}
-
-	contracts = append(contracts, c1)
-	contracts = append(contracts, c2)
-}
-
-func initDB() (*sql.DB, error) {
-	connStr := "postgres://postgres:password123@localhost/postgres?sslmode=disable"
-	db, err := sql.Open("postgres", connStr)
-	if err != nil {
-		log.Println("failed here", err)
-		return nil, err
+	
+	var myMap = map[string]func([]Contract, bool){
+		"name":        sortByName,
+		"address":     sortByAddress,
+		"transaction": sortByTransaction,
 	}
-
-	if err != nil {
-		panic(err)
-	}
-
-	if err = db.Ping(); err != nil {
-		panic(err)
-	}
-	// this will be printed in the terminal, confirming the connection to the database
-	fmt.Println("The database is connected")
-	return db, err;
-}
-
-func queryContracts(db *sql.DB) ([]string, error) {
-	rows, err := db.Query("SELECT * FROM Contracts")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-
-	return names, nil
+	sortFunc := myMap[sortType]
+	sortFunc(contracts, isDescending)
+	json.NewEncoder(w).Encode(contracts)
 }
 
 func startHttpServer() {
@@ -134,7 +89,8 @@ func startHttpServer() {
 
 	// Registering our handler functions, and creating paths.
 	router.HandleFunc("/", Home)
-	router.HandleFunc("/itemsLocal", getContracts).Methods("GET")
+	router.HandleFunc("/contracts", getContracts).Methods("GET")
+	router.HandleFunc("/contracts/{sort_type}/sort:{sort}", getContractsSort).Methods("GET")
 
 	log.Println("Started on port", portNum)
 	fmt.Println("To close connection CTRL+C :-)")
@@ -146,68 +102,102 @@ func startHttpServer() {
 	}
 }
 
-// func sortByName(contracts []Contract, descending bool) {
-// 	if descending {
-// 		sort.Slice(contracts[:], func(i, j int) bool {
-// 			return contracts[i].Name > contracts[j].Name
-// 		})
-// 	} else {
-// 		sort.Slice(contracts[:], func(i, j int) bool {
-// 			return contracts[i].Name < contracts[j].Name
-// 		})
-// 	}
-// }
+func main() {
+	db, err := initDB()
+	if err != nil {
+		fmt.Printf("failed to init db")
+		return
+	}
 
-// func sortByAddress(contracts []Contract, descending bool) {
-// 	if descending {
-// 		sort.Slice(contracts[:], func(i, j int) bool {
-// 			return contracts[i].Address > contracts[j].Address
-// 		})
-// 	} else {
-// 		sort.Slice(contracts[:], func(i, j int) bool {
-// 			return contracts[i].Address < contracts[j].Address
-// 		})
-// 	}
-// }
+	names, err := queryContracts(db)
+	if err != nil {
+		fmt.Println("failed to query DB")
+		return
+	}
 
-// func sortByTransaction(contracts []Contract, descending bool) {
-// 	if descending {
-// 		sort.Slice(contracts[:], func(i, j int) bool {
-// 			return contracts[i].Transaction > contracts[j].Transaction
-// 		})
-// 	} else {
-// 		sort.Slice(contracts[:], func(i, j int) bool {
-// 			return contracts[i].Transaction < contracts[j].Transaction
-// 		})
-// 	}
-// }
+	for i, item := range names {
+		fmt.Println(i, "--", item)
+	}
 
-// func main() {
-// 	fmt.Println("hello world")
+	startHttpServer()
+}
 
-// 	var data JsonPayload
-// 	file, err := ioutil.ReadFile("FlowJson.json")
-// 	if err != nil {
-// 		fmt.Printf("failed to read json file, error: %v", err)
-// 		return
-// 	}
+func initDB() (*sql.DB, error) {
+	connStr := fmt.Sprintf("postgres://%s:%s@localhost/postgres?sslmode=disable", userName, password)
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		log.Println("failed here", err)
+		return nil, err
+	}
 
-// 	err = json.Unmarshal([]byte(file), &data)
-// 	if err != nil {
-// 		fmt.Println("failed to unmarshall file:", err)
-// 		return
-// 	}
+	if err != nil {
 
-// 	fmt.Println("Sort by:", data.SortBy)
-// 	fmt.Println("Sort by:", data.Descending)
+		panic(err)
+	}
 
-// var myMap = map[string]func([]Contract, bool){
-// 	"name":        sortByName,
-// 	"address":     sortByAddress,
-// 	"transaction": sortByTransaction,
-// }
-// sortFunc := myMap[data.SortBy]
-// sortFunc(data.Contracts, data.Descending)
-// fmt.Println(data.SortBy, data.Descending)
-// fmt.Println("Contracts:", data.Contracts)
-// }
+	if err = db.Ping(); err != nil {
+		panic(err)
+	}
+	
+	fmt.Println("The database is connected")
+	return db, err
+}
+
+func queryContracts(db *sql.DB) ([]Contract, error) {
+	rows, err := db.Query("SELECT name, address, transaction_id, block, contractType, status FROM Contracts")
+
+	if err != nil {
+		fmt.Printf("failed to fire query")
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var data Contract
+		if err := rows.Scan(&data.Name, &data.Address, &data.Transaction, &data.Block, &data.ContractType, &data.Status); err != nil {
+			fmt.Println("failed to scan row")
+			return nil, err
+		}
+
+		contracts = append(contracts, data)
+	}
+
+	return contracts, nil
+}
+
+func sortByName(contracts []Contract, descending bool) {
+	if descending {
+		sort.Slice(contracts[:], func(i, j int) bool {
+			return contracts[i].Name > contracts[j].Name
+		})
+	} else {
+		sort.Slice(contracts[:], func(i, j int) bool {
+			return contracts[i].Name < contracts[j].Name
+		})
+	}
+}
+
+func sortByAddress(contracts []Contract, descending bool) {
+	if descending {
+		sort.Slice(contracts[:], func(i, j int) bool {
+			return contracts[i].Address > contracts[j].Address
+		})
+	} else {
+		sort.Slice(contracts[:], func(i, j int) bool {
+			return contracts[i].Address < contracts[j].Address
+		})
+	}
+}
+
+func sortByTransaction(contracts []Contract, descending bool) {
+	if descending {
+		sort.Slice(contracts[:], func(i, j int) bool {
+			return contracts[i].Transaction > contracts[j].Transaction
+		})
+	} else {
+		sort.Slice(contracts[:], func(i, j int) bool {
+			return contracts[i].Transaction < contracts[j].Transaction
+		})
+	}
+}
+
