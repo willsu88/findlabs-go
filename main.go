@@ -2,10 +2,10 @@ package main
 
 import (
 	"database/sql"
+	_ "github.com/lib/pq"
 	"encoding/json"
 	"fmt"
 	"github.com/gorilla/mux"
-	_ "github.com/lib/pq"
 	"log"
 	"net/http"
 	"os"
@@ -16,7 +16,6 @@ import (
 )
 
 const portNum string = ":8080"
-
 var userName string = os.Getenv("postgresUser")
 var password string = os.Getenv("postgresPassword")
 var database *sql.DB
@@ -43,12 +42,7 @@ func main() {
 
 /* ---------- HTTP and Handler functions ----------  */
 func startHttpServer() {
-	router := mux.NewRouter()
-
-	// Registering our handler functions, and creating paths.
-	router.Path("/contracts").HandlerFunc(getAllContracts).Methods("GET")
-	router.Path("/contracts/sort").Queries("reverse", "{is_reverse}").HandlerFunc(getContractsSort).Methods("GET")
-	router.Path("/contracts/name/{name}").HandlerFunc(getContractByNamePrefix).Methods("GET")
+	router := initHttpHandler()
 
 	// Spinning up the server.
 	log.Println("Started on port", portNum)
@@ -57,6 +51,16 @@ func startHttpServer() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func initHttpHandler() http.Handler {
+    router := mux.NewRouter()
+
+	// Registering our handler functions, and creating paths.
+	router.Path("/contracts").HandlerFunc(getAllContracts).Methods("GET")
+	router.Path("/contracts/sort").Queries("reverse", "{is_reverse}").HandlerFunc(getContractsSort).Methods("GET")
+	router.Path("/contracts/name/{name}").HandlerFunc(getContractByNamePrefix).Methods("GET")
+	return router
 }
 
 func getAllContracts(w http.ResponseWriter, r *http.Request) {
@@ -82,14 +86,8 @@ func getContractByNamePrefix(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	nameString := vars["name"]
 	log.Println(nameString)
-	idx := slices.IndexFunc(contracts, func(contract Contract) bool { return strings.HasPrefix(contract.Name,nameString) })
-	if idx == -1 {
-		w.WriteHeader(http.StatusNotFound)
-    	w.Write([]byte("404 - Cannot find transaction with this name!"))
-		return
-	}
-
-	json.NewEncoder(w).Encode(contracts[idx])
+	contracts = filter(contracts, nameString)
+	json.NewEncoder(w).Encode(contracts)
 }
 
 func getContractsSort(w http.ResponseWriter, r *http.Request) {
@@ -157,3 +155,14 @@ func queryContractsfromDB(db *sql.DB) ([]Contract, error) {
 
 	return contracts, nil
 }
+
+// Sorting / Filtering Functions
+func filter(contracts []Contract, prefix string) []Contract {
+	var out []Contract
+	for _, contract := range contracts {
+	   if strings.HasPrefix(contract.Name,prefix) {
+		  out = append(out, contract)
+	   }
+	}
+	return out
+ }
