@@ -8,196 +8,152 @@ import (
 	_ "github.com/lib/pq"
 	"log"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
+	"slices"
+	"strings"
 )
-
-type ContractType string
-type Status string
-type Order string
-type SortBy string
 
 const portNum string = ":8080"
-const userName string = "postgres"
-const password string = "password123"
 
-const (
-	Ok    Status = "ok"
-	Error Status = "error"
-)
-
-const (
-	Deployed ContractType = "deployed"
-	Updated  ContractType = "updated"
-)
-
-const (
-	Name        SortBy = "name"
-	Address     SortBy = "address"
-	Transaction SortBy = "transaction"
-)
-
-type JsonPayload struct {
-	SortBy     string
-	Descending bool `json:",string"`
-}
+var userName string = os.Getenv("postgresUser")
+var password string = os.Getenv("postgresPassword")
+var database *sql.DB
 
 type Contract struct {
-	Name         string       `db:"name"`
-	Address      string       `db:"address"`
-	Transaction  string       `db:"transaction_id"`
-	Block        int          `db:"block"`
-	ContractType ContractType `db:"contractType"`
-	Status       Status       `db:"status"`
+	Name         string `db:"name"`
+	Address      string `db:"address"`
+	Transaction  string `db:"transaction_id"`
+	Block        int    `db:"block"`
+	ContractType string `db:"contractType"`
+	Status       string `db:"status"`
 }
 
-var contracts []Contract
-
-// Handler functions.
-func Home(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Homepage")
-}
-
-func getContracts(w http.ResponseWriter, r *http.Request) {
-	log.Println("Get Contracts function")
-
-	json.NewEncoder(w).Encode(contracts)
-}
-
-func getContractsSort(w http.ResponseWriter, r *http.Request) {
-	log.Println("Into Sorting function")
-	vars := mux.Vars(r)
-
-	sortType := vars["sort_type"]
-	isDescending := false
-	if vars["sort"] == "asc" {
-		isDescending = true
+func main() {
+	db, err := initDB()
+	if err != nil {
+		log.Printf("failed to init db")
+		return
 	}
-	
-	var myMap = map[string]func([]Contract, bool){
-		"name":        sortByName,
-		"address":     sortByAddress,
-		"transaction": sortByTransaction,
-	}
-	sortFunc := myMap[sortType]
-	sortFunc(contracts, isDescending)
-	json.NewEncoder(w).Encode(contracts)
+	database = db
+
+	startHttpServer()
 }
 
+/* ---------- HTTP and Handler functions ----------  */
 func startHttpServer() {
-	log.Println("Starting our simple http server.")
 	router := mux.NewRouter()
 
 	// Registering our handler functions, and creating paths.
-	router.HandleFunc("/", Home)
-	router.HandleFunc("/contracts", getContracts).Methods("GET")
-	router.HandleFunc("/contracts/{sort_type}/sort:{sort}", getContractsSort).Methods("GET")
-
-	log.Println("Started on port", portNum)
-	fmt.Println("To close connection CTRL+C :-)")
+	router.Path("/contracts").HandlerFunc(getAllContracts).Methods("GET")
+	router.Path("/contracts/sort").Queries("reverse", "{is_reverse}").HandlerFunc(getContractsSort).Methods("GET")
+	router.Path("/contracts/name/{name}").HandlerFunc(getContractByNamePrefix).Methods("GET")
 
 	// Spinning up the server.
+	log.Println("Started on port", portNum)
+	log.Println("To close connection CTRL+C :-)")
 	err := http.ListenAndServe(portNum, router)
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
-func main() {
-	db, err := initDB()
+func getAllContracts(w http.ResponseWriter, r *http.Request) {
+	log.Println("Get Contracts function")
+	contracts, err := queryContractsfromDB(database)
 	if err != nil {
-		fmt.Printf("failed to init db")
+		w.WriteHeader(http.StatusNotFound)
+    	w.Write([]byte("404 - Error querying the database!"))
 		return
 	}
-
-	names, err := queryContracts(db)
-	if err != nil {
-		fmt.Println("failed to query DB")
-		return
-	}
-
-	for i, item := range names {
-		fmt.Println(i, "--", item)
-	}
-
-	startHttpServer()
+	json.NewEncoder(w).Encode(contracts)
 }
 
+func getContractByNamePrefix(w http.ResponseWriter, r *http.Request) {
+	log.Println("Get Contract by Name function")
+	contracts, err := queryContractsfromDB(database)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+    	w.Write([]byte("404 - Error querying the database!"))
+		return
+	}
+
+	vars := mux.Vars(r)
+	nameString := vars["name"]
+	log.Println(nameString)
+	idx := slices.IndexFunc(contracts, func(contract Contract) bool { return strings.HasPrefix(contract.Name,nameString) })
+	if idx == -1 {
+		w.WriteHeader(http.StatusNotFound)
+    	w.Write([]byte("404 - Cannot find transaction with this name!"))
+		return
+	}
+
+	json.NewEncoder(w).Encode(contracts[idx])
+}
+
+func getContractsSort(w http.ResponseWriter, r *http.Request) {
+	log.Println("Sort Contracts Based on Name")
+	contracts, err := queryContractsfromDB(database)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("404 - Error querying the database!"))
+		return
+	}
+	
+	var isReverse bool
+	vars := mux.Vars(r)
+	isReverseString, exist := vars["is_reverse"]
+	if exist {
+		isReverse, _ = strconv.ParseBool(isReverseString)
+	} else {
+		isReverse = false
+	}
+
+	sort.Slice(contracts[:], func(i, j int) bool {
+		return contracts[i].Name < contracts[j].Name
+	})
+
+	if isReverse { slices.Reverse(contracts)}
+	json.NewEncoder(w).Encode(contracts)
+}
+
+/* ---------- Database functions ----------  */
 func initDB() (*sql.DB, error) {
 	connStr := fmt.Sprintf("postgres://%s:%s@localhost/postgres?sslmode=disable", userName, password)
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		log.Println("failed here", err)
-		return nil, err
-	}
-
-	if err != nil {
-
 		panic(err)
 	}
 
 	if err = db.Ping(); err != nil {
 		panic(err)
 	}
-	
-	fmt.Println("The database is connected")
+
+	log.Println("The database is connected")
 	return db, err
 }
 
-func queryContracts(db *sql.DB) ([]Contract, error) {
+func queryContractsfromDB(db *sql.DB) ([]Contract, error) {
 	rows, err := db.Query("SELECT name, address, transaction_id, block, contractType, status FROM Contracts")
 
 	if err != nil {
-		fmt.Printf("failed to fire query")
+		log.Printf("failed to fire query")
 		return nil, err
 	}
 	defer rows.Close()
 
+	var contracts []Contract
 	for rows.Next() {
 		var data Contract
-		if err := rows.Scan(&data.Name, &data.Address, &data.Transaction, &data.Block, &data.ContractType, &data.Status); err != nil {
-			fmt.Println("failed to scan row")
+		err := rows.Scan(&data.Name, &data.Address, &data.Transaction, &data.Block, &data.ContractType, &data.Status)
+		if err != nil {
+			log.Println("failed to scan row")
 			return nil, err
 		}
-
 		contracts = append(contracts, data)
 	}
 
 	return contracts, nil
 }
-
-func sortByName(contracts []Contract, descending bool) {
-	if descending {
-		sort.Slice(contracts[:], func(i, j int) bool {
-			return contracts[i].Name > contracts[j].Name
-		})
-	} else {
-		sort.Slice(contracts[:], func(i, j int) bool {
-			return contracts[i].Name < contracts[j].Name
-		})
-	}
-}
-
-func sortByAddress(contracts []Contract, descending bool) {
-	if descending {
-		sort.Slice(contracts[:], func(i, j int) bool {
-			return contracts[i].Address > contracts[j].Address
-		})
-	} else {
-		sort.Slice(contracts[:], func(i, j int) bool {
-			return contracts[i].Address < contracts[j].Address
-		})
-	}
-}
-
-func sortByTransaction(contracts []Contract, descending bool) {
-	if descending {
-		sort.Slice(contracts[:], func(i, j int) bool {
-			return contracts[i].Transaction > contracts[j].Transaction
-		})
-	} else {
-		sort.Slice(contracts[:], func(i, j int) bool {
-			return contracts[i].Transaction < contracts[j].Transaction
-		})
-	}
-}
-
